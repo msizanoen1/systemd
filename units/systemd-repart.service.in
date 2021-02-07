@@ -19,7 +19,7 @@ ConditionVirtualization=!container
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=@rootbindir@/systemd-repart --dry-run=no --discard=no --tpm2-pcrs=0,7
+ExecStart=@rootbindir@/systemd-repart --dry-run=no --discard=no
 
 # The tool returns 77 if there's no existing GPT partition table
 SuccessExitStatus=77

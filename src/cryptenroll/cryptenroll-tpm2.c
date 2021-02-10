@@ -85,10 +85,6 @@ int enroll_tpm2(struct crypt_device *cd,
                 log_debug_errno(r, "PCR policy hash not yet enrolled, enrolling now.");
         else if (r < 0)
                 return r;
-        else {
-                log_info("This PCR set is already enrolled, executing no operation.");
-                return r; /* return existing keyslot, so that wiping won't kill it */
-        }
 
         /* Quick verification that everything is in order, we are not in a hurry after all. */
         log_debug("Unsealing for verification...");

@@ -16,6 +16,8 @@
 #include "random-util.h"
 #include "time-util.h"
 
+#define SD_TPM2_PRIMARY_KEY_HANDLE 0x81000001
+
 static void *libtss2_esys_dl = NULL;
 static void *libtss2_rc_dl = NULL;
 static void *libtss2_mu_dl = NULL;
@@ -33,6 +35,8 @@ TSS2_RC (*sym_Esys_PolicyPCR)(ESYS_CONTEXT *esysContext, ESYS_TR policySession, 
 TSS2_RC (*sym_Esys_StartAuthSession)(ESYS_CONTEXT *esysContext, ESYS_TR tpmKey, ESYS_TR bind, ESYS_TR shandle1, ESYS_TR shandle2, ESYS_TR shandle3, const TPM2B_NONCE *nonceCaller, TPM2_SE sessionType, const TPMT_SYM_DEF *symmetric, TPMI_ALG_HASH authHash, ESYS_TR *sessionHandle) = NULL;
 TSS2_RC (*sym_Esys_Startup)(ESYS_CONTEXT *esysContext, TPM2_SU startupType) = NULL;
 TSS2_RC (*sym_Esys_Unseal)(ESYS_CONTEXT *esysContext, ESYS_TR itemHandle, ESYS_TR shandle1, ESYS_TR shandle2, ESYS_TR shandle3, TPM2B_SENSITIVE_DATA **outData) = NULL;
+TSS2_RC (*sym_Esys_TR_FromTPMPublic)(ESYS_CONTEXT *esysContext, TPM2_HANDLE tpm_handle, ESYS_TR optionalSession1, ESYS_TR optionalSession2, ESYS_TR optionalSession3, ESYS_TR *object);
+TSS2_RC (*sym_Esys_EvictControl)(ESYS_CONTEXT *esysContext, ESYS_TR auth, ESYS_TR objectHandle, ESYS_TR shandle1, ESYS_TR shandle2, ESYS_TR shandle3, TPMI_DH_PERSISTENT persistentHandle, ESYS_TR *newObjectHandle);
 
 const char* (*sym_Tss2_RC_Decode)(TSS2_RC rc) = NULL;
 
@@ -68,6 +72,8 @@ int dlopen_tpm2(void) {
                                 DLSYM_ARG(Esys_StartAuthSession),
                                 DLSYM_ARG(Esys_Startup),
                                 DLSYM_ARG(Esys_Unseal),
+                                DLSYM_ARG(Esys_TR_FromTPMPublic),
+                                DLSYM_ARG(Esys_EvictControl),
                                 NULL);
                 if (r < 0)
                         return r;
@@ -309,7 +315,7 @@ static int tpm2_make_primary(
                 .publicArea = {
                         .type = TPM2_ALG_ECC,
                         .nameAlg = TPM2_ALG_SHA256,
-                        .objectAttributes = TPMA_OBJECT_RESTRICTED|TPMA_OBJECT_DECRYPT|TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT|TPMA_OBJECT_SENSITIVEDATAORIGIN|TPMA_OBJECT_USERWITHAUTH,
+                        .objectAttributes = TPMA_OBJECT_RESTRICTED|TPMA_OBJECT_DECRYPT|TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT|TPMA_OBJECT_SENSITIVEDATAORIGIN|TPMA_OBJECT_USERWITHAUTH|TPMA_OBJECT_NODA,
                         .parameters = {
                                 .eccDetail = {
                                         .symmetric = {
@@ -325,8 +331,24 @@ static int tpm2_make_primary(
                 },
         };
         static const TPML_PCR_SELECTION creation_pcr = {};
+        ESYS_TR primary_transient = ESYS_TR_NONE;
         ESYS_TR primary = ESYS_TR_NONE;
         TSS2_RC rc;
+
+        log_debug("Trying to use existing primary key on TPM.");
+
+        rc = sym_Esys_TR_FromTPMPublic(
+                        c,
+                        SD_TPM2_PRIMARY_KEY_HANDLE,
+                        ESYS_TR_NONE,
+                        ESYS_TR_NONE,
+                        ESYS_TR_NONE,
+                        &primary);
+
+        if (rc == TSS2_RC_SUCCESS) {
+                *ret_primary = primary;
+                return 0;
+        }
 
         log_debug("Creating primary key on TPM.");
 
@@ -340,7 +362,7 @@ static int tpm2_make_primary(
                         &primary_template,
                         NULL,
                         &creation_pcr,
-                        &primary,
+                        &primary_transient,
                         NULL,
                         NULL,
                         NULL,
@@ -349,6 +371,22 @@ static int tpm2_make_primary(
         if (rc != TSS2_RC_SUCCESS)
                 return log_error_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE),
                                        "Failed to generate primary key in TPM: %s", sym_Tss2_RC_Decode(rc));
+
+        rc = sym_Esys_EvictControl(
+                        c,
+                        ESYS_TR_RH_OWNER,
+                        primary_transient,
+                        ESYS_TR_PASSWORD,
+                        ESYS_TR_NONE,
+                        ESYS_TR_NONE,
+                        SD_TPM2_PRIMARY_KEY_HANDLE,
+                        &primary);
+
+        if (rc != TSS2_RC_SUCCESS)
+                return log_error_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE),
+                                       "Failed to persist primary key in TPM: %s", sym_Tss2_RC_Decode(rc));
+
+        primary_transient = flush_context_verbose(c, primary_transient);
 
         log_debug("Successfully created primary key on TPM.");
 
@@ -536,7 +574,7 @@ int tpm2_seal(
                 .publicArea = {
                         .type = TPM2_ALG_KEYEDHASH,
                         .nameAlg = TPM2_ALG_SHA256,
-                        .objectAttributes = TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT,
+                        .objectAttributes = TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT | TPMA_OBJECT_NODA,
                         .parameters = {
                                 .keyedHashDetail = {
                                         .scheme.scheme = TPM2_ALG_NULL,

@@ -19,6 +19,9 @@ ConditionDirectoryNotEmpty=|/usr/lib/repart.d
 ConditionDirectoryNotEmpty=|/usr/local/lib/repart.d
 ConditionDirectoryNotEmpty=|/etc/repart.d
 ConditionDirectoryNotEmpty=|/run/repart.d
+ConditionDirectoryNotEmpty=|/sysroot/usr/lib/repart.d
+ConditionDirectoryNotEmpty=|/sysroot/usr/local/lib/repart.d
+ConditionDirectoryNotEmpty=|/sysroot/etc/repart.d
 
 [Service]
 Type=oneshot
